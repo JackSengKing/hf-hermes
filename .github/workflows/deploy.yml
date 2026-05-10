@@ -12,19 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Git
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-
       - name: Deploy to HF
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO: ${{ secrets.HF_REPO }}
-        run: |
-          git clone https://huggingface.co/spaces/$HF_REPO hf_repo
-          cp -r ./* hf_repo/ || true
-          cd hf_repo
-          git add .
-          git commit -m "Update from GitHub"
-          git push https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          external_repository: ${{ secrets.HF_REPO }}
+          personal_token: ${{ secrets.HF_TOKEN }}
+          publish_dir: ./
+          publish_branch: main
+          user_name: github-actions
+          user_email: github-actions@github.com
