@@ -4,9 +4,9 @@
 
 # 主模型配置
 model:
-  default: "moonshotai/kimi-k2-thinking"
-  provider: "nvidia"
-  base_url: "https://integrate.api.nvidia.com/v1"
+  default: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+  provider: "deepseek"
+  base_url: "https://api.deepseek.com"
 
 # 辅助模型配置 (per-task overrides)
 auxiliary:
