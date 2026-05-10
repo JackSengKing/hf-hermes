@@ -1,3 +1,13 @@
+---
+title: Hermes
+emoji: 🐳
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
+# Hermes AI Application
 20260504更新内容
 ### 2.1 Baoyu 技能系统（Baoyu Skills）
 **什么是 Baoyu Skills？**
