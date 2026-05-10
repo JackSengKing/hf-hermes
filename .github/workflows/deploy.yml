@@ -11,13 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Deploy to HF
-        uses: peaceiris/actions-gh-pages@v4
+      
+      - name: Sync to Hugging Face
+        uses: huggingface/huggingface_sync_action@v1
         with:
-          external_repository: ${{ secrets.HF_REPO }}
-          personal_token: ${{ secrets.HF_TOKEN }}
-          publish_dir: ./
-          publish_branch: main
-          user_name: github-actions
-          user_email: github-actions@github.com
+          repository: ${{ secrets.HF_REPO }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          hf_token: ${{ secrets.HF_TOKEN }}
+          sync_dir: ./
