@@ -16,53 +16,41 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: 验证配置并部署到 Hugging Face Space
+      - name: 部署到 Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_SPACE_REPO }}
+          HF_USERNAME: "JackKing001"
         run: |
           set -euxo pipefail
           
-          # ==============================================
-          # 第一步：变量验证
-          # ==============================================
-          if [ -z "$HF_TOKEN" ]; then
-            echo "❌ 错误：HF_TOKEN 为空"
+          # 变量验证
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_REPO" ]; then
+            echo "❌ 错误：必要变量为空"
             exit 1
           fi
           
-          if [ -z "$HF_REPO" ]; then
-            echo "❌ 错误：HF_SPACE_REPO 为空"
-            exit 1
-          fi
-          
-          # ==============================================
-          # 第二步：拼接永久带凭证的仓库地址
-          # ==============================================
-          REPO_URL="https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO"
           echo "✅ 配置验证通过"
           echo "目标仓库：$HF_REPO"
           
-          # ==============================================
-          # 第三步：部署核心逻辑（修复凭证问题）
-          # ==============================================
           # 清理旧目录
           rm -rf hf_space
           
-          # 克隆远程仓库
-          git clone --depth 1 "$REPO_URL" hf_space
+          # ✅ 核心优化：匿名克隆（完全不需要 token，永远不会失败）
+          echo "=== 克隆远程仓库 ==="
+          git clone --depth 1 "https://huggingface.co/spaces/$HF_REPO" hf_space
           
-          # 关键修复：重新设置远程 URL（覆盖 Git 自动剥离的凭证）
+          # 自动检测远程默认分支
           cd hf_space
-          git remote set-url origin "$REPO_URL"  # 这行是核心！
           DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           cd ..
           
           # 清空并同步文件
+          echo "=== 同步本地文件 ==="
           find hf_space -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} \;
           rsync -av --exclude='.git' ./ hf_space/
           
-          # 提交并推送
+          # 提交变更
           cd hf_space
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
@@ -70,7 +58,11 @@ jobs:
           
           if ! git diff --cached --quiet; then
             git commit -m "Auto deploy from GitHub $(date +'%Y-%m-%d %H:%M:%S')"
-            git push --force origin "$DEFAULT_BRANCH"
+            
+            # ✅ 唯一需要认证的地方：推送时直接在命令中指定完整URL
+            echo "=== 推送到远程仓库 ==="
+            git push --force "https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_REPO" "$DEFAULT_BRANCH"
+            
             echo "✅ 部署成功！"
             echo "访问地址：https://huggingface.co/spaces/$HF_REPO"
           else
