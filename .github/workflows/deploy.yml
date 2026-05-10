@@ -9,66 +9,68 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      # 提前强制使用 Node.js 24，彻底消除警告
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      # 升级到 v5，支持 Node.js 24，6 月 2 日后无需修改
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 1  # 只拉取最新提交，加快速度
-          clean: true     # 自动清理工作区
+          fetch-depth: 1
+          clean: true
 
       - name: 部署到 Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_REPO }}
         run: |
-          # 拼接正确的认证仓库地址
+          set -euxo pipefail  # 开启严格模式和调试输出
+          
           REPO_URL="https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO"
+          echo "=== 部署配置 ==="
+          echo "仓库地址: $HF_REPO"
+          echo "工作目录: $(pwd)"
+          echo "本地文件列表:"
+          ls -la
           
-          echo "=== 开始部署到 $HF_REPO ==="
-          
-          # 清理可能存在的旧目录
+          # 清理旧目录
           rm -rf hf_space
           
-          # 克隆远程仓库（添加 --depth 1 加快速度）
-          git clone --depth 1 "$REPO_URL" hf_space || {
-            echo "❌ 克隆失败！请检查："
-            echo "1. HF_TOKEN 是否有写入权限"
-            echo "2. HF_REPO 是否正确（JackKing001/Hermes）"
-            echo "3. 仓库是否存在且可访问"
-            exit 1
-          }
+          # 克隆远程仓库
+          echo "=== 克隆远程仓库 ==="
+          git clone --depth 1 "$REPO_URL" hf_space
           
-          # 清空远程仓库所有文件，保证完全同步
+          # 自动检测远程默认分支
           cd hf_space
-          git rm -rf . --ignore-unmatch
+          DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "远程默认分支: $DEFAULT_BRANCH"
           cd ..
           
-          # 复制本地所有文件（包含隐藏文件）
-          cp -rf ./* hf_space/
-          cp -rf ./.* hf_space/ 2>/dev/null || true
+          # 清空远程仓库所有文件（排除 .git 目录）
+          echo "=== 清空远程仓库旧文件 ==="
+          find hf_space -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} \;
           
-          # 进入仓库目录提交
+          # 复制本地所有文件（排除 .git 目录，关键！）
+          echo "=== 复制本地文件 ==="
+          rsync -av --exclude='.git' ./ hf_space/
+          
+          # 进入仓库目录
           cd hf_space
           
           # Git 配置
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
+          # 检查变更
+          echo "=== 检查文件变更 ==="
+          git status
+          
           # 添加所有变更
           git add -A
           
-          # 提交（无变更时也不会报错）
-          git commit -m "Auto deploy from GitHub $(date +'%Y-%m-%d %H:%M:%S')" || {
-            echo "ℹ️ 没有文件变更，跳过提交"
-            exit 0
-          }
-          
-          # 强制推送，覆盖远程所有变更
-          git push --force origin main || {
-            echo "❌ 推送失败！请检查 HF_TOKEN 写入权限"
-            exit 1
-          }
-          
-          echo "✅ 部署成功！"
+          # 提交（无变更时优雅退出）
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto deploy from GitHub $(date +'%Y-%m-%d %H:%M:%S')"
+            echo "=== 推送到远程仓库 ==="
+            git push --force origin "$DEFAULT_BRANCH"
+            echo "✅ 部署成功！"
+          else
+            echo "ℹ️ 没有文件变更，跳过部署"
+          fi
