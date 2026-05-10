@@ -1,5 +1,4 @@
 name: Deploy to Hugging Face
-
 on:
   workflow_dispatch:
   push:
@@ -11,22 +10,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 拉取完整历史
 
-      - name: 部署到 HF Docker Space
+      - name: 部署到 Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_REPO }}
         run: |
-          # 固定正确格式：https://huggingface.co/spaces/用户名/仓库名
+          # 拼接正确的仓库地址
           REPO_URL="https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO"
           
-          # 克隆并强制同步文件
-          git clone $REPO_URL hf_space
+          # 克隆远程仓库
+          git clone "$REPO_URL" hf_space
+          
+          # 清空旧文件，保证完全同步（关键）
+          rm -rf hf_space/*
+          rm -rf hf_space/.* 2>/dev/null || true
+          
+          # 复制所有文件（包含隐藏文件）
           cp -rf ./* hf_space/
+          cp -rf ./.* hf_space/ 2>/dev/null || true
+          
           cd hf_space
           
-          # 提交推送
-          git config --global user.name "Auto Deploy"
-          git add .
-          git commit -m "Update" || true
-          git push $REPO_URL
+          # Git 配置
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          # 提交并推送
+          git add -A
+          git commit -m "Auto deploy from GitHub" || true
+          git push
