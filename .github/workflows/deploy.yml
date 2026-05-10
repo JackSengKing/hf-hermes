@@ -12,24 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 部署到 Hugging Face
+      - name: 部署到 HF Docker Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_REPO }}
         run: |
-          # 克隆你的HF空间
-          git clone https://huggingface.co/spaces/$HF_REPO temp-hf
+          # 固定正确格式：https://huggingface.co/spaces/用户名/仓库名
+          REPO_URL="https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO"
           
-          # 复制所有文件过去（覆盖更新）
-          cp -rf ./* temp-hf/
-          cp -rf ./.??* temp-hf/ 2>/dev/null || true
+          # 克隆并强制同步文件
+          git clone $REPO_URL hf_space
+          cp -rf ./* hf_space/
+          cd hf_space
           
-          # 提交并推送
-          cd temp-hf
-          git config --global user.name "Action"
-          git config --global user.email "action@github.com"
+          # 提交推送
+          git config --global user.name "Auto Deploy"
           git add .
-          git commit -m "Update from GitHub"
-          
-          # 关键：带token推送
-          git push https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO
+          git commit -m "Update" || true
+          git push $REPO_URL
