@@ -1,0 +1,30 @@
+name: Deploy to Hugging Face
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+
+      - name: Deploy to HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          git clone https://huggingface.co/spaces/$HF_REPO hf_repo
+          cp -r ./* hf_repo/ || true
+          cd hf_repo
+          git add .
+          git commit -m "Update from GitHub"
+          git push https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO
