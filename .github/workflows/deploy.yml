@@ -19,71 +19,48 @@ jobs:
       - name: 验证配置并部署到 Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # 适配你现有的密钥名称 HF_SPACE_REPO
           HF_REPO: ${{ secrets.HF_SPACE_REPO }}
         run: |
           set -euxo pipefail
           
           # ==============================================
-          # 第一步：强制验证所有必要变量
+          # 第一步：变量验证
           # ==============================================
           if [ -z "$HF_TOKEN" ]; then
-            echo "❌ 错误：HF_TOKEN 变量为空！"
-            echo "请在 GitHub Secrets 中添加 HF_TOKEN 密钥"
+            echo "❌ 错误：HF_TOKEN 为空"
             exit 1
           fi
           
           if [ -z "$HF_REPO" ]; then
-            echo "❌ 错误：HF_SPACE_REPO 变量为空！"
-            echo "请确认 GitHub Secrets 中 HF_SPACE_REPO 的值为：JackKing001/Hermes"
-            exit 1
-          fi
-          
-          # 验证仓库格式是否正确
-          if [[ ! "$HF_REPO" =~ ^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$ ]]; then
-            echo "❌ 错误：HF_SPACE_REPO 格式不正确！"
-            echo "正确格式：用户名/仓库名"
-            echo "你的当前值：$HF_REPO"
-            echo "正确值：JackKing001/Hermes"
+            echo "❌ 错误：HF_SPACE_REPO 为空"
             exit 1
           fi
           
           # ==============================================
-          # 第二步：拼接正确的仓库地址
+          # 第二步：拼接永久带凭证的仓库地址
           # ==============================================
           REPO_URL="https://$HF_TOKEN@huggingface.co/spaces/$HF_REPO"
           echo "✅ 配置验证通过"
           echo "目标仓库：$HF_REPO"
-          echo "工作目录：$(pwd)"
           
           # ==============================================
-          # 第三步：执行部署
+          # 第三步：部署核心逻辑（修复凭证问题）
           # ==============================================
           # 清理旧目录
           rm -rf hf_space
           
-          # 克隆远程仓库（增加超时和重试）
-          echo "=== 克隆远程仓库 ==="
-          git clone --depth 1 --quiet "$REPO_URL" hf_space || {
-            echo "❌ 克隆失败！可能的原因："
-            echo "1. HF_TOKEN 没有写入权限"
-            echo "2. HF_SPACE_REPO 拼写错误（注意大小写）"
-            echo "3. 仓库不存在或你没有访问权限"
-            exit 1
-          }
+          # 克隆远程仓库
+          git clone --depth 1 "$REPO_URL" hf_space
           
-          # 自动检测远程默认分支（兼容 main/master）
+          # 关键修复：重新设置远程 URL（覆盖 Git 自动剥离的凭证）
           cd hf_space
+          git remote set-url origin "$REPO_URL"  # 这行是核心！
           DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "远程默认分支：$DEFAULT_BRANCH"
           cd ..
           
-          # 清空远程仓库所有文件（保留 .git 目录）
-          echo "=== 同步文件 ==="
+          # 清空并同步文件
           find hf_space -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} \;
-          
-          # 使用 rsync 安全复制文件（自动排除 .git 目录）
-          rsync -av --quiet --exclude='.git' ./ hf_space/
+          rsync -av --exclude='.git' ./ hf_space/
           
           # 提交并推送
           cd hf_space
@@ -92,8 +69,8 @@ jobs:
           git add -A
           
           if ! git diff --cached --quiet; then
-            git commit -m "Auto deploy from GitHub $(date +'%Y-%m-%d %H:%M:%S')" --quiet
-            git push --force origin "$DEFAULT_BRANCH" --quiet
+            git commit -m "Auto deploy from GitHub $(date +'%Y-%m-%d %H:%M:%S')"
+            git push --force origin "$DEFAULT_BRANCH"
             echo "✅ 部署成功！"
             echo "访问地址：https://huggingface.co/spaces/$HF_REPO"
           else
