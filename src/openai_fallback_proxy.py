@@ -22,6 +22,8 @@ FALLBACK_API_KEY = os.environ.get("FALLBACK_API_KEY", "")
 FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "openrouter/free")
 FALLBACK_REFERER = os.environ.get("OPENROUTER_HTTP_REFERER", "https://huggingface.co")
 FALLBACK_TITLE = os.environ.get("OPENROUTER_X_TITLE", "Hermes HF Fallback")
+VERBOSE_LOGGING = os.environ.get("FALLBACK_PROXY_VERBOSE", "true").lower() in {"1", "true", "yes", "on"}
+MAX_LOG_CHARS = int(os.environ.get("FALLBACK_PROXY_MAX_LOG_CHARS", "6000"))
 
 
 def is_retryable(status_code: int) -> bool:
@@ -106,6 +108,61 @@ def normalize_messages(messages: Any) -> Any:
     return normalized_messages
 
 
+def clip_text(value: str, limit: int = MAX_LOG_CHARS) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + f"... [truncated {len(value) - limit} chars]"
+
+
+def dump_json(data: Any) -> str:
+    try:
+        return clip_text(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        return f"<json-dump-error: {exc}>"
+
+
+def summarize_messages(messages: Any) -> Any:
+    if not isinstance(messages, list):
+        return messages
+    summary = []
+    for idx, message in enumerate(messages):
+        if not isinstance(message, dict):
+            summary.append({"index": idx, "type": type(message).__name__, "value": str(message)[:200]})
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            content_preview = clip_text(content, 400)
+            content_type = "str"
+        elif isinstance(content, list):
+            content_preview = clip_text(json.dumps(content, ensure_ascii=False), 400)
+            content_type = "list"
+        elif isinstance(content, dict):
+            content_preview = clip_text(json.dumps(content, ensure_ascii=False), 400)
+            content_type = "dict"
+        else:
+            content_preview = clip_text(str(content), 400)
+            content_type = type(content).__name__
+        summary.append(
+            {
+                "index": idx,
+                "role": message.get("role"),
+                "content_type": content_type,
+                "content_preview": content_preview,
+                "has_tool_calls": bool(message.get("tool_calls")),
+                "tool_call_id": message.get("tool_call_id"),
+                "name": message.get("name"),
+                "keys": sorted(message.keys()),
+            }
+        )
+    return summary
+
+
+def log_debug(title: str, data: Any) -> None:
+    if not VERBOSE_LOGGING:
+        return
+    print(f"[fallback-proxy] {title}:\n{dump_json(data)}")
+
+
 def create_upstream_response(
     upstream_base: str,
     payload: Dict[str, Any],
@@ -116,6 +173,17 @@ def create_upstream_response(
     request_payload = dict(payload)
     request_payload["messages"] = normalize_messages(request_payload.get("messages"))
     request_payload["model"] = model_override
+    log_debug(
+        "outbound_request",
+        {
+            "upstream_base": upstream_base,
+            "model_override": model_override,
+            "stream": bool(request_payload.get("stream")),
+            "keys": sorted(request_payload.keys()),
+            "message_summary": summarize_messages(request_payload.get("messages")),
+            "payload": request_payload,
+        },
+    )
     return requests.post(
         f"{upstream_base}/chat/completions",
         headers=build_headers(api_key, extra_headers),
@@ -240,6 +308,17 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             return
 
+        log_debug(
+            "incoming_request",
+            {
+                "path": self.path,
+                "keys": sorted(payload.keys()),
+                "stream": bool(payload.get("stream")),
+                "message_summary": summarize_messages(payload.get("messages")),
+                "payload": payload,
+            },
+        )
+
         if not PRIMARY_BASE_URL or not PRIMARY_MODEL:
             self._send_json(500, {"error": {"message": "Primary model not configured"}})
             return
@@ -252,6 +331,14 @@ class Handler(BaseHTTPRequestHandler):
                 payload,
                 PRIMARY_API_KEY,
                 PRIMARY_MODEL,
+            )
+            log_debug(
+                "primary_response",
+                {
+                    "status_code": primary_response.status_code,
+                    "headers": dict(primary_response.headers),
+                    "body_preview": clip_text(primary_response.text if not stream else "<stream-response>"),
+                },
             )
             if primary_response.status_code < 400:
                 self._relay_response(primary_response, stream)
@@ -289,6 +376,14 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "HTTP-Referer": FALLBACK_REFERER,
                     "X-Title": FALLBACK_TITLE,
+                },
+            )
+            log_debug(
+                "fallback_response",
+                {
+                    "status_code": fallback_response.status_code,
+                    "headers": dict(fallback_response.headers),
+                    "body_preview": clip_text(fallback_response.text if not stream else "<stream-response>"),
                 },
             )
             self._relay_response(fallback_response, stream)
