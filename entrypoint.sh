@@ -110,7 +110,7 @@ get_provider_api_key_var() {
         gemini) echo "GEMINI_API_KEY" ;;
         openrouter) echo "OPENROUTER_API_KEY" ;;
         longcat) echo "LONGCAT_API_KEY" ;;
-        *) echo "" ;;
+        *) echo "OPENAI_API_KEY" ;;
     esac
 }
 
@@ -196,12 +196,11 @@ fi
 USE_MAIN_FALLBACK_PROXY=false
 if [ -n "$MODEL_BASE_URL" ] && [ -n "$FALLBACK_PROVIDER" ] && [ -n "$FALLBACK_MODEL_VAL" ]; then
     USE_MAIN_FALLBACK_PROXY=true
-    MAIN_PROVIDER="openai"
     MAIN_BASE_URL="http://127.0.0.1:${FALLBACK_PROXY_PORT}/v1"
 fi
 
 if [ "$USE_MAIN_FALLBACK_PROXY" = true ]; then
-    echo "馃洂 Fallback Model: $FALLBACK_PROVIDER/$FALLBACK_MODEL_VAL"
+    echo "🛟 Fallback Model: $FALLBACK_PROVIDER/$FALLBACK_MODEL_VAL"
     echo "   Fallback URL: $FALLBACK_BASE_URL_VAL"
 fi
 
@@ -466,18 +465,18 @@ echo "   ✅ HERMES_MODEL=$HERMES_MODEL (进程级模型覆盖)"
 echo "⚙️  注入环境变量到 .env..."
 FALLBACK_PROXY_PID=""
 if [ "$USE_MAIN_FALLBACK_PROXY" = true ]; then
-    echo "馃洂 鍚姩涓绘ā鍨?fallback 浠ｇ悊..."
+    echo "🛟 启动主模型 fallback 代理..."
     PRIMARY_KEY_VAR=$(get_provider_api_key_var "$PRIMARY_PROVIDER_FOR_PROXY")
     FALLBACK_KEY_VAR=$(get_provider_api_key_var "$FALLBACK_PROVIDER")
     PRIMARY_API_KEY_VAL="${!PRIMARY_KEY_VAR}"
     FALLBACK_API_KEY_VAL="${!FALLBACK_KEY_VAR}"
 
     if [ -z "$PRIMARY_KEY_VAR" ] || [ -z "$PRIMARY_API_KEY_VAL" ]; then
-        echo "   鉂?涓绘ā鍨?API Key 鏈缃? provider=$PRIMARY_PROVIDER_FOR_PROXY var=$PRIMARY_KEY_VAR"
+        echo "   ❌ 主模型 API Key 未设置: provider=$PRIMARY_PROVIDER_FOR_PROXY var=$PRIMARY_KEY_VAR"
         exit 1
     fi
     if [ -z "$FALLBACK_KEY_VAR" ] || [ -z "$FALLBACK_API_KEY_VAL" ]; then
-        echo "   鉂?fallback API Key 鏈缃? provider=$FALLBACK_PROVIDER var=$FALLBACK_KEY_VAR"
+        echo "   ❌ fallback API Key 未设置: provider=$FALLBACK_PROVIDER var=$FALLBACK_KEY_VAR"
         exit 1
     fi
 
@@ -496,13 +495,12 @@ if [ "$USE_MAIN_FALLBACK_PROXY" = true ]; then
 
     for i in $(seq 1 10); do
         if curl -sf "http://127.0.0.1:${FALLBACK_PROXY_PORT}/health" > /dev/null 2>&1; then
-            echo "   鉁?fallback 浠ｇ悊宸插氨缁?(http://127.0.0.1:${FALLBACK_PROXY_PORT})"
+            echo "   ✅ fallback 代理已就绪 (http://127.0.0.1:${FALLBACK_PROXY_PORT})"
             break
         fi
         sleep 1
     done
 
-    export OPENAI_API_KEY="local-fallback-proxy"
     export OPENAI_BASE_URL="http://127.0.0.1:${FALLBACK_PROXY_PORT}/v1"
 fi
 
@@ -1379,7 +1377,7 @@ cleanup() {
         wait $BFF_PID 2>/dev/null || true
     fi
     if [ -n "$FALLBACK_PROXY_PID" ] && kill -0 $FALLBACK_PROXY_PID 2>/dev/null; then
-        echo "   馃洃 鍋滄 fallback 浠ｇ悊..."
+        echo "   🛑 停止 fallback 代理..."
         kill $FALLBACK_PROXY_PID 2>/dev/null || true
         wait $FALLBACK_PROXY_PID 2>/dev/null || true
     fi
