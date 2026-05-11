@@ -28,6 +28,10 @@ def is_retryable(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
 
 
+def should_fallback(status_code: int) -> bool:
+    return status_code == 400 or is_retryable(status_code)
+
+
 def build_headers(api_key: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -45,6 +49,16 @@ def create_upstream_response(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
     request_payload = dict(payload)
+    if isinstance(request_payload.get("messages"), list):
+        normalized_messages = []
+        for message in request_payload["messages"]:
+            if isinstance(message, dict) and message.get("role") == "developer":
+                normalized = dict(message)
+                normalized["role"] = "system"
+                normalized_messages.append(normalized)
+            else:
+                normalized_messages.append(message)
+        request_payload["messages"] = normalized_messages
     request_payload["model"] = model_override
     return requests.post(
         f"{upstream_base}/chat/completions",
@@ -96,6 +110,14 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.wfile.write(response.content)
 
+    def _send_plain(self, status_code: int, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send_json(
@@ -108,7 +130,22 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path == "/v1/models":
+        if self.path in {"/version", "/v1/props", "/props"}:
+            self._send_json(
+                200,
+                {
+                    "version": "fallback-proxy",
+                    "primary_model": PRIMARY_MODEL,
+                    "fallback_model": FALLBACK_MODEL,
+                },
+            )
+            return
+
+        if self.path in {"/api/tags"}:
+            self._send_json(200, {"models": [{"name": PRIMARY_MODEL or FALLBACK_MODEL}]})
+            return
+
+        if self.path in {"/v1/models", "/api/v1/models"}:
             self._send_json(
                 200,
                 {
@@ -120,6 +157,18 @@ class Handler(BaseHTTPRequestHandler):
                             "owned_by": "hermes-local-proxy",
                         }
                     ],
+                },
+            )
+            return
+
+        if self.path.startswith("/v1/models/"):
+            model_id = self.path.split("/v1/models/", 1)[1]
+            self._send_json(
+                200,
+                {
+                    "id": model_id or PRIMARY_MODEL or FALLBACK_MODEL,
+                    "object": "model",
+                    "owned_by": "hermes-local-proxy",
                 },
             )
             return
@@ -151,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
             if primary_response.status_code < 400:
                 self._relay_response(primary_response, stream)
                 return
-            if not FALLBACK_API_KEY or not is_retryable(primary_response.status_code):
+            if not FALLBACK_API_KEY or not should_fallback(primary_response.status_code):
                 self._relay_response(primary_response, False)
                 return
         except requests.RequestException as error:
