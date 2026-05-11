@@ -82,6 +82,38 @@ declare -A PROVIDER_BASE_URLS=(
     ["longcat"]="https://api.longcat.chat/openai"
 )
 
+FALLBACK_PROXY_PORT="${FALLBACK_PROXY_PORT:-8787}"
+
+get_provider_base_url() {
+    local provider="$1"
+    case "$provider" in
+        nvidia) echo "${NVIDIA_BASE_URL:-${PROVIDER_BASE_URLS[nvidia]}}" ;;
+        siliconflow) echo "${SILICONFLOW_BASE_URL:-${PROVIDER_BASE_URLS[siliconflow]}}" ;;
+        openai) echo "${OPENAI_BASE_URL:-${PROVIDER_BASE_URLS[openai]}}" ;;
+        anthropic) echo "${ANTHROPIC_BASE_URL:-${PROVIDER_BASE_URLS[anthropic]}}" ;;
+        google) echo "${GOOGLE_BASE_URL:-${PROVIDER_BASE_URLS[google]}}" ;;
+        gemini) echo "${GEMINI_BASE_URL:-${PROVIDER_BASE_URLS[gemini]}}" ;;
+        openrouter) echo "${OPENROUTER_BASE_URL:-${PROVIDER_BASE_URLS[openrouter]}}" ;;
+        longcat) echo "${LONGCAT_BASE_URL:-${PROVIDER_BASE_URLS[longcat]}}" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_provider_api_key_var() {
+    local provider="$1"
+    case "$provider" in
+        nvidia) echo "NVIDIA_API_KEY" ;;
+        siliconflow) echo "SILICONFLOW_API_KEY" ;;
+        openai) echo "OPENAI_API_KEY" ;;
+        anthropic) echo "ANTHROPIC_API_KEY" ;;
+        google) echo "GOOGLE_API_KEY" ;;
+        gemini) echo "GEMINI_API_KEY" ;;
+        openrouter) echo "OPENROUTER_API_KEY" ;;
+        longcat) echo "LONGCAT_API_KEY" ;;
+        *) echo "" ;;
+    esac
+}
+
 # ---- 检测主模型 ----
 detect_main_model() {
     if [ -n "$MODEL_PROVIDER" ] && [ -n "$MODEL_NAME" ]; then
@@ -144,8 +176,34 @@ echo "⚡ Aux Model: ${AUX_MODEL_VAL:-auto-detect}"
 DELEGATION_MODEL_VAL=$(detect_delegation_model)
 echo "💻 Delegation Model: ${DELEGATION_MODEL_VAL:-inherit-main}"
 
-MAIN_BASE_URL="${PROVIDER_BASE_URLS[$MAIN_PROVIDER]}"
+PRIMARY_PROVIDER_FOR_PROXY="$MAIN_PROVIDER"
+MAIN_BASE_URL="$(get_provider_base_url "$MAIN_PROVIDER")"
+if [ -n "$MODEL_BASE_URL" ]; then
+    MAIN_BASE_URL="$MODEL_BASE_URL"
+fi
 echo "   Base URL: $MAIN_BASE_URL"
+
+FALLBACK_PROVIDER="${FALLBACK_MODEL_PROVIDER:-}"
+FALLBACK_MODEL_VAL="${FALLBACK_MODEL_NAME:-}"
+FALLBACK_BASE_URL_VAL="${FALLBACK_MODEL_BASE_URL:-}"
+if [ -n "$FALLBACK_PROVIDER" ] && [ -z "$FALLBACK_MODEL_VAL" ] && [ "$FALLBACK_PROVIDER" = "openrouter" ]; then
+    FALLBACK_MODEL_VAL="openrouter/free"
+fi
+if [ -n "$FALLBACK_PROVIDER" ] && [ -z "$FALLBACK_BASE_URL_VAL" ]; then
+    FALLBACK_BASE_URL_VAL="$(get_provider_base_url "$FALLBACK_PROVIDER")"
+fi
+
+USE_MAIN_FALLBACK_PROXY=false
+if [ -n "$MODEL_BASE_URL" ] && [ -n "$FALLBACK_PROVIDER" ] && [ -n "$FALLBACK_MODEL_VAL" ]; then
+    USE_MAIN_FALLBACK_PROXY=true
+    MAIN_PROVIDER="openai"
+    MAIN_BASE_URL="http://127.0.0.1:${FALLBACK_PROXY_PORT}/v1"
+fi
+
+if [ "$USE_MAIN_FALLBACK_PROXY" = true ]; then
+    echo "馃洂 Fallback Model: $FALLBACK_PROVIDER/$FALLBACK_MODEL_VAL"
+    echo "   Fallback URL: $FALLBACK_BASE_URL_VAL"
+fi
 
 echo "────────────────────────────────────────"
 
@@ -354,6 +412,12 @@ fi
 if [ -n "$SILICONFLOW_API_KEY" ]; then
     export SILICONFLOW_BASE_URL="${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}"
 fi
+if [ -n "$OPENAI_API_KEY" ]; then
+    export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+fi
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"
+fi
 if [ -n "$GEMINI_API_KEY" ]; then
     export GEMINI_BASE_URL="${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}"
 fi
@@ -400,19 +464,63 @@ echo "   ✅ HERMES_MODEL=$HERMES_MODEL (进程级模型覆盖)"
 
 # ==================== 环境变量注入 ====================
 echo "⚙️  注入环境变量到 .env..."
+FALLBACK_PROXY_PID=""
+if [ "$USE_MAIN_FALLBACK_PROXY" = true ]; then
+    echo "馃洂 鍚姩涓绘ā鍨?fallback 浠ｇ悊..."
+    PRIMARY_KEY_VAR=$(get_provider_api_key_var "$PRIMARY_PROVIDER_FOR_PROXY")
+    FALLBACK_KEY_VAR=$(get_provider_api_key_var "$FALLBACK_PROVIDER")
+    PRIMARY_API_KEY_VAL="${!PRIMARY_KEY_VAR}"
+    FALLBACK_API_KEY_VAL="${!FALLBACK_KEY_VAR}"
+
+    if [ -z "$PRIMARY_KEY_VAR" ] || [ -z "$PRIMARY_API_KEY_VAL" ]; then
+        echo "   鉂?涓绘ā鍨?API Key 鏈缃? provider=$PRIMARY_PROVIDER_FOR_PROXY var=$PRIMARY_KEY_VAR"
+        exit 1
+    fi
+    if [ -z "$FALLBACK_KEY_VAR" ] || [ -z "$FALLBACK_API_KEY_VAL" ]; then
+        echo "   鉂?fallback API Key 鏈缃? provider=$FALLBACK_PROVIDER var=$FALLBACK_KEY_VAR"
+        exit 1
+    fi
+
+    FALLBACK_PROXY_HOST=127.0.0.1 \
+    FALLBACK_PROXY_PORT="$FALLBACK_PROXY_PORT" \
+    PRIMARY_BASE_URL="$MODEL_BASE_URL" \
+    PRIMARY_API_KEY="$PRIMARY_API_KEY_VAL" \
+    PRIMARY_MODEL="$MAIN_MODEL" \
+    FALLBACK_BASE_URL="$FALLBACK_BASE_URL_VAL" \
+    FALLBACK_API_KEY="$FALLBACK_API_KEY_VAL" \
+    FALLBACK_MODEL="$FALLBACK_MODEL_VAL" \
+    OPENROUTER_HTTP_REFERER="${OPENROUTER_HTTP_REFERER:-https://huggingface.co/spaces/JackKing001/Hermes}" \
+    OPENROUTER_X_TITLE="${OPENROUTER_X_TITLE:-Hermes HF Fallback}" \
+    python -m src.openai_fallback_proxy &
+    FALLBACK_PROXY_PID=$!
+
+    for i in $(seq 1 10); do
+        if curl -sf "http://127.0.0.1:${FALLBACK_PROXY_PORT}/health" > /dev/null 2>&1; then
+            echo "   鉁?fallback 浠ｇ悊宸插氨缁?(http://127.0.0.1:${FALLBACK_PROXY_PORT})"
+            break
+        fi
+        sleep 1
+    done
+
+    export OPENAI_API_KEY="local-fallback-proxy"
+    export OPENAI_BASE_URL="http://127.0.0.1:${FALLBACK_PROXY_PORT}/v1"
+fi
+
 ENV_FILE="/data/.hermes/.env"
 mkdir -p /data/.hermes
 
 PERSISTENT_VARS=(
-    "MODEL_PROVIDER" "MODEL_NAME" "HERMES_MODEL"
+    "MODEL_PROVIDER" "MODEL_NAME" "MODEL_BASE_URL" "HERMES_MODEL"
     "VISION_MODEL" "AUX_MODEL" "DELEGATION_MODEL"
     "NVIDIA_API_KEY" "NVIDIA_BASE_URL"
     "SILICONFLOW_API_KEY" "SILICONFLOW_BASE_URL"
-    "OPENAI_API_KEY"
-    "ANTHROPIC_API_KEY"
+    "OPENAI_API_KEY" "OPENAI_BASE_URL"
+    "ANTHROPIC_API_KEY" "ANTHROPIC_BASE_URL"
     "GOOGLE_API_KEY" "GEMINI_API_KEY" "GEMINI_BASE_URL"
     "OPENROUTER_API_KEY" "OPENROUTER_BASE_URL"
     "LONGCAT_API_KEY" "LONGCAT_BASE_URL"
+    "FALLBACK_MODEL_PROVIDER" "FALLBACK_MODEL_NAME" "FALLBACK_MODEL_BASE_URL"
+    "FALLBACK_PROXY_PORT" "OPENROUTER_HTTP_REFERER" "OPENROUTER_X_TITLE"
     "API_SERVER_ENABLED" "API_SERVER_PORT" "API_SERVER_HOST"
     "TELEGRAM_BOT_TOKEN" "TELEGRAM_ALLOWED_USERS" "TELEGRAM_PROXY"
     "DISCORD_BOT_TOKEN" "DISCORD_CLIENT_ID"
@@ -1269,6 +1377,11 @@ cleanup() {
         echo "   🛑 停止 Web UI..."
         kill $BFF_PID 2>/dev/null || true
         wait $BFF_PID 2>/dev/null || true
+    fi
+    if [ -n "$FALLBACK_PROXY_PID" ] && kill -0 $FALLBACK_PROXY_PID 2>/dev/null; then
+        echo "   馃洃 鍋滄 fallback 浠ｇ悊..."
+        kill $FALLBACK_PROXY_PID 2>/dev/null || true
+        wait $FALLBACK_PROXY_PID 2>/dev/null || true
     fi
     if [ -n "$GATEWAY_PID" ] && kill -0 $GATEWAY_PID 2>/dev/null; then
         echo "   🛑 停止 Gateway..."
