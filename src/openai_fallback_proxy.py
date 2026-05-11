@@ -41,6 +41,71 @@ def build_headers(api_key: str, extra: Optional[Dict[str, str]] = None) -> Dict[
     return headers
 
 
+def normalize_message_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                elif "text" in item:
+                    parts.append(str(item.get("text", "")))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def normalize_messages(messages: Any) -> Any:
+    if not isinstance(messages, list):
+        return messages
+
+    normalized_messages = []
+    for message in messages:
+        if not isinstance(message, dict):
+            normalized_messages.append(message)
+            continue
+
+        role = (message.get("role") or "user").lower()
+        content = normalize_message_content(message.get("content"))
+
+        if role == "developer":
+            role = "system"
+        elif role in {"tool", "function"}:
+            role = "user"
+            prefix = "Tool result"
+            tool_name = message.get("name") or message.get("tool_call_id")
+            if tool_name:
+                prefix = f"Tool result ({tool_name})"
+            content = f"{prefix}:\n{content}" if content else prefix
+        elif role not in {"system", "user", "assistant"}:
+            role = "user"
+
+        normalized: Dict[str, Any] = {
+            "role": role,
+            "content": content,
+        }
+
+        if role == "assistant" and message.get("tool_calls"):
+            normalized["tool_calls"] = message.get("tool_calls")
+            if not content:
+                normalized["content"] = json.dumps(message.get("tool_calls"), ensure_ascii=False)
+
+        normalized_messages.append(normalized)
+
+    return normalized_messages
+
+
 def create_upstream_response(
     upstream_base: str,
     payload: Dict[str, Any],
@@ -49,16 +114,7 @@ def create_upstream_response(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
     request_payload = dict(payload)
-    if isinstance(request_payload.get("messages"), list):
-        normalized_messages = []
-        for message in request_payload["messages"]:
-            if isinstance(message, dict) and message.get("role") == "developer":
-                normalized = dict(message)
-                normalized["role"] = "system"
-                normalized_messages.append(normalized)
-            else:
-                normalized_messages.append(message)
-        request_payload["messages"] = normalized_messages
+    request_payload["messages"] = normalize_messages(request_payload.get("messages"))
     request_payload["model"] = model_override
     return requests.post(
         f"{upstream_base}/chat/completions",
@@ -200,6 +256,19 @@ class Handler(BaseHTTPRequestHandler):
             if primary_response.status_code < 400:
                 self._relay_response(primary_response, stream)
                 return
+            if primary_response.status_code == 400:
+                try:
+                    body_preview = primary_response.text[:500]
+                except Exception:
+                    body_preview = "<unavailable>"
+                try:
+                    message_roles = [m.get("role") for m in (payload.get("messages") or []) if isinstance(m, dict)]
+                except Exception:
+                    message_roles = []
+                print(
+                    "[fallback-proxy] primary 400 -> fallback; "
+                    f"roles={message_roles} keys={sorted(payload.keys())} body={body_preview}"
+                )
             if not FALLBACK_API_KEY or not should_fallback(primary_response.status_code):
                 self._relay_response(primary_response, False)
                 return
